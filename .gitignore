@@ -1,0 +1,27 @@
+# VecFS memory (see .cursor/mcp.json → VECFS_FILE)
+.vecfs/
+*.jsonl
+*.json1
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+ENV/
+
+# ClipSorter temp work (per project plan)
+tmp/clipsorter_work/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

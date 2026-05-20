@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "agent_relative_path": "mcp.json",
+      "kind": "mcp",
+      "before_absent": true,
+      "before_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "after_sha256": "72485450db451c972769479ae8f7979844cf846d1683566b53045ba368fa80fa",
+      "fragments": {
+        "type": "mcp",
+        "server_names": [
+          "vecfs",
+          "playwright",
+          "github",
+          "filesystem"
+        ]
+      },
+      "before_canonical": "{}"
+    }
+  ]
+}

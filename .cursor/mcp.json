@@ -1,0 +1,33 @@
+{
+  "mcpServers": {
+    "vecfs": {
+    "command": "cmd",
+    "args": ["/c", "C:\\Program Files\\nodejs\\vecfs.cmd"],
+    "env": {
+      "VECFS_FILE": "F:\\pili\\.vecfs\\memory.jsonl"
+    }
+  },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "@playwright/mcp"
+      ]
+    },
+    "github": {
+      "command": "npx",
+      "args": [
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${env:GITHUB_TOKEN}"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "@modelcontextprotocol/server-filesystem",
+        "${env:PROJECT_ROOT}"
+      ]
+    }
+  }
+}

@@ -1,0 +1,9 @@
+Safehouse-Manifest:
+  packages:
+    - name: vecfs-setup
+      version: 0.1.0
+      source: station
+      binary_scope: user-bin
+      install_layout: multi
+      config_journal_path: config-journal/vecfs-setup.json
+  station_path: C:\Users\Bogie\.atp_station
