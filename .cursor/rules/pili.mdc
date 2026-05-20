@@ -1,0 +1,587 @@
+---
+alwaysApply: true
+---
+# ClipSorter — Full Project Plan
+### AI Agent Instructions for VS Code
+**Version:** 1.0  
+**Type:** CLI-first, then Simple Desktop App  
+**Language:** Python  
+**Purpose:** Non-destructive QC sorting tool for raw media folders (news/video production workflow)
+
+---
+
+## 1. PROJECT OVERVIEW
+
+ClipSorter is a local tool that accepts a folder path, recursively scans all media files inside, converts them to canonical formats, runs quality control checks, detects duplicate/repetitive content, and repositions files into a clean output folder structure — without deleting or modifying the original folder.
+
+The target user is a solo video editor or news producer who receives raw, unsorted media dumps (from Google Drive or camera cards) and needs them cleaned and organized before editing begins.
+
+---
+
+## 2. WHAT THE APP DOES — FULL FLOW
+
+```
+User runs: python sort.py /path/to/TargetFolder
+
+1. Recursively scan /TargetFolder — find every file, all subfolders, all depths
+2. Identify each file's true type (by content, not just extension)
+3. Filter — skip files under minimum duration (video/audio) or unsupported types
+4. Convert — normalize all files to canonical formats (mp4, jpg, mp3)
+5. QC Analysis — run quality checks per file type (blur, exposure, shake, silence)
+6. Duplicate Detection — cross-reference all files for content-level matches
+7. Classify — assign each file to: clean / review / rejected
+8. Move — place converted files into sibling output folder structure
+9. Report — write a full log of every decision made
+10. Original folder — untouched. User decides what to do with it.
+```
+
+---
+
+## 3. FOLDER STRUCTURE
+
+### Input (User Selected)
+```
+/TargetFolder/              ← user selects this via CLI argument
+  clip_001.mp4
+  clip_002.mov
+  photo_001.arw
+  /107_FUJI/
+    clip_003.mts
+    clip_004.mp4
+  /brolls/
+    broll_001.mp4
+  /Interviews/
+    interview_01.mov
+```
+
+### Output (Auto-Created as Sibling)
+```
+/TargetFolder_sorted/       ← created automatically next to TargetFolder
+  _report.txt               ← full log of every decision
+  /clean/
+    /videos/
+    /photos/
+    /audio/
+  /review/
+    /videos/
+    /photos/
+    /audio/
+  /rejected/
+    /videos/
+    /photos/
+    /audio/
+```
+
+The original `/TargetFolder/` is never modified or deleted.
+
+---
+
+## 4. FILE TYPE HANDLING
+
+### 4a. Canonical Format Targets
+
+| Detected Type | Output Format | Notes |
+|---|---|---|
+| Video | `.mp4` (H.264, AAC audio) | All video normalizes to mp4 |
+| Photo / Image | `.jpg` | Including RAW formats |
+| Audio | `.mp3` | 192kbps |
+| Unknown / Unsupported | Skip | Log the file as skipped |
+
+### 4b. Input Formats to Handle
+
+**Video:**
+`.mp4`, `.mov`, `.mxf`, `.avi`, `.mkv`, `.wmv`, `.mts`, `.m2ts`, `.3gp`, `.flv`, `.webm`, `.ts`, `.vob`
+
+**Photo:**
+`.jpg`, `.jpeg`, `.png`, `.bmp`, `.tiff`, `.tif`, `.webp`, `.heic`, `.heif`, `.arw`, `.cr2`, `.cr3`, `.nef`, `.orf`, `.raf`, `.dng`, `.rw2`
+
+**Audio:**
+`.mp3`, `.wav`, `.aac`, `.m4a`, `.flac`, `.ogg`, `.wma`, `.aiff`, `.opus`
+
+**Ignored (log as skipped):**
+`.pdf`, `.docx`, `.xlsx`, `.txt`, `.xml`, `.zip`, `.exe`, `.lnk`, and any unrecognized extension
+
+### 4c. File Type Detection
+- Use `python-magic` to detect true file type by reading file header bytes — do NOT rely on file extension alone. A `.mp4` renamed to `.mov` should still be handled correctly.
+
+### 4d. Sorting Within Output
+Inside each bucket (`clean`, `review`, `rejected`), files are separated into `/videos/`, `/photos/`, `/audio/` subfolders automatically based on their detected type.
+
+---
+
+## 5. QC CHECKS
+
+### 5a. Thresholds (All Configurable via config.json)
+
+| Parameter | Default | Description |
+|---|---|---|
+| `min_video_duration_sec` | 5 | Videos shorter than this → rejected |
+| `min_audio_duration_sec` | 3 | Audio shorter than this → rejected |
+| `blur_threshold` | 80.0 | Laplacian variance below this → blurry |
+| `blur_reject_ratio` | 0.6 | If >60% of sampled frames are blurry → rejected (else review) |
+| `exposure_low_threshold` | 30 | Mean brightness below this → underexposed |
+| `exposure_high_threshold` | 225 | Mean brightness above this → overexposed |
+| `exposure_reject_ratio` | 0.7 | If >70% of frames fail exposure → rejected (else review) |
+| `shake_threshold` | 15.0 | Optical flow mean above this → shaky |
+| `frame_sample_count` | 10 | Number of frames to sample per video for analysis |
+| `duplicate_hash_threshold` | 10 | Hamming distance below this = duplicate (perceptual hash) |
+| `duplicate_video_frame_match_ratio` | 0.7 | If >70% of keyframes match another clip → duplicate |
+
+### 5b. Video QC Checks
+
+**Check 1 — Duration**
+- Tool: FFprobe (via `ffmpeg-python` or subprocess call)
+- Method: Read `duration` from stream metadata
+- Result: Under `min_video_duration_sec` → **rejected**
+
+**Check 2 — Blur Detection**
+- Tool: OpenCV
+- Method: Sample `frame_sample_count` frames evenly across the video. For each frame, convert to grayscale, apply Laplacian operator, compute variance. Low variance = blurry.
+- Result:
+  - If >60% of frames are blurry → **rejected**
+  - If 30–60% of frames are blurry → **review**
+  - Otherwise → pass
+
+**Check 3 — Exposure Analysis**
+- Tool: OpenCV
+- Method: For each sampled frame, compute brightness histogram. Check mean value and histogram spread.
+- Result:
+  - Mean brightness < `exposure_low_threshold` → underexposed
+  - Mean brightness > `exposure_high_threshold` → overexposed
+  - If >70% of frames fail → **rejected**
+  - If 30–70% of frames fail → **review**
+  - Otherwise → pass
+
+**Check 4 — Shake / Instability Detection**
+- Tool: OpenCV
+- Method: Compute dense optical flow between consecutive sampled frames. Calculate mean magnitude of flow vectors. High and inconsistent motion = shake.
+- Result:
+  - Above `shake_threshold` → **review** (never auto-rejected — shaky footage is editorial judgment)
+
+### 5c. Photo QC Checks
+
+**Check 1 — Blur Detection**
+- Same Laplacian method as video, on the single image
+- Result: Below `blur_threshold` → **rejected**
+
+**Check 2 — Exposure Analysis**
+- Same histogram method as video, on the single image
+- Result: Fails → **review**
+
+### 5d. Audio QC Checks
+
+**Check 1 — Duration**
+- Tool: FFprobe
+- Result: Under `min_audio_duration_sec` → **rejected**
+
+**Check 2 — Silence Detection**
+- Tool: librosa
+- Method: Compute RMS energy across the waveform. If >80% of the file is below silence threshold → mostly silent → **rejected**
+
+### 5e. QC Result Priority (when multiple checks fail)
+If any check results in **rejected** → file goes to rejected (rejected overrides review).
+If any check results in **review** and none result in rejected → file goes to review.
+If all checks pass → file goes to clean.
+
+---
+
+## 6. DUPLICATE / REPETITIVE FILE DETECTION
+
+This is content-aware. File names are irrelevant. Two differently named files with the same or very similar content are flagged.
+
+### 6a. Image Duplicate Detection
+- Tool: `imagehash` (pHash — perceptual hash)
+- Method: Compute pHash for every photo. Compare all pairs. If Hamming distance < `duplicate_hash_threshold` → duplicate pair found.
+- Result: Both files go to **review** bucket with log note: `DUPLICATE of [filename] (hash distance: X)`
+
+### 6b. Video Duplicate Detection
+- Tool: OpenCV + imagehash
+- Method: Extract `frame_sample_count` keyframes from each video. Compute pHash for each keyframe. Compare keyframe hashes across all video pairs. If >70% of keyframes match → duplicate.
+- Result: Both files go to **review** with log note: `DUPLICATE of [filename] (XX% keyframe match)`
+
+### 6c. Audio Duplicate Detection
+- Tool: librosa
+- Method: Compute chromagram fingerprint for each audio file. Compare fingerprints using cosine similarity. Above 0.95 similarity → duplicate.
+- Result: Both files go to **review** with log note: `DUPLICATE of [filename] (audio fingerprint match)`
+
+### 6d. Duplicate Handling Rule
+- Never auto-delete either file
+- Both go to `/review/` regardless of their QC scores
+- The log clearly states which file is the suspected duplicate of which
+
+---
+
+## 7. OUTPUT REPORT
+
+Written to `/TargetFolder_sorted/_report.txt` after every run.
+
+### Format
+```
+========================================
+CLIPSORTER REPORT
+Run date: 2026-05-17 14:32:01
+Source folder: /Users/editor/2026.05.17_Chroniclers
+Output folder: /Users/editor/2026.05.17_Chroniclers_sorted
+========================================
+
+SUMMARY
+-------
+Total files found:        87
+Files processed:          79
+Files skipped:            8  (unsupported type)
+Converted to mp4:         42
+Converted to jpg:         28
+Converted to mp3:         9
+
+Results:
+  Clean:                  51
+  Review:                 19
+  Rejected:               9
+
+========================================
+DETAIL LOG
+========================================
+
+[CLEAN]    videos/clip_001.mp4
+           Original: /107_FUJI/clip_001.mp4
+           Converted from: .mov
+           Duration: 12.3s | Blur: PASS | Exposure: PASS | Shake: PASS
+
+[REVIEW]   videos/clip_002.mp4
+           Original: /brolls/clip_002.mp4
+           Converted from: .mp4 (no conversion needed)
+           Duration: 8.1s | Blur: PASS | Exposure: REVIEW (underexposed 45% frames) | Shake: PASS
+
+[REVIEW]   videos/clip_003.mp4
+           Original: /110D7000/clip_003.mp4
+           Flags: DUPLICATE of videos/clip_004.mp4 (74% keyframe match)
+
+[REJECTED] videos/clip_007.mp4
+           Original: /107_FUJI/clip_007.mp4
+           Duration: 2.1s → REJECTED (below 5s minimum)
+
+[REJECTED] photos/photo_032.jpg
+           Original: /photos/photo_032.arw
+           Converted from: .arw
+           Blur: REJECTED (Laplacian variance: 12.4, threshold: 80.0)
+
+[SKIPPED]  /documents/brief.pdf
+           Reason: Unsupported file type
+
+========================================
+END OF REPORT
+========================================
+```
+
+---
+
+## 8. CONFIGURATION FILE
+
+Location: `config.json` in the same directory as `sort.py`
+
+```json
+{
+  "min_video_duration_sec": 5,
+  "min_audio_duration_sec": 3,
+  "blur_threshold": 80.0,
+  "blur_reject_ratio": 0.6,
+  "blur_review_ratio": 0.3,
+  "exposure_low_threshold": 30,
+  "exposure_high_threshold": 225,
+  "exposure_reject_ratio": 0.7,
+  "exposure_review_ratio": 0.3,
+  "shake_threshold": 15.0,
+  "frame_sample_count": 10,
+  "duplicate_hash_threshold": 10,
+  "duplicate_video_frame_match_ratio": 0.7,
+  "duplicate_audio_similarity_threshold": 0.95,
+  "silence_rms_threshold": 0.01,
+  "silence_ratio_threshold": 0.80,
+  "video_output_codec": "libx264",
+  "video_output_crf": 18,
+  "audio_output_bitrate": "192k"
+}
+```
+
+If `config.json` is missing, the app uses the defaults above and logs a warning.
+
+---
+
+## 9. TECH STACK
+
+### Core Language
+- **Python 3.10+**
+
+### Libraries
+
+| Library | Purpose | Install |
+|---|---|---|
+| `opencv-python` | Blur detection, exposure analysis, optical flow (shake), frame extraction | `pip install opencv-python` |
+| `ffmpeg-python` | Video/audio conversion, duration reading | `pip install ffmpeg-python` |
+| `ffprobe` | Metadata reading (duration, codec, streams) | Bundled with FFmpeg binary |
+| `rawpy` | RAW photo format reading (ARW, CR2, NEF, etc.) | `pip install rawpy` |
+| `Pillow` | General image processing and conversion | `pip install Pillow` |
+| `imagehash` | Perceptual hashing for duplicate detection | `pip install imagehash` |
+| `librosa` | Audio analysis — silence detection, fingerprinting | `pip install librosa` |
+| `python-magic` | True file type detection by header bytes | `pip install python-magic` |
+| `tqdm` | CLI progress bar | `pip install tqdm` |
+| `numpy` | Numerical operations (used by OpenCV and librosa) | `pip install numpy` |
+
+### System Dependencies (must be installed separately)
+- **FFmpeg** — must be installed and available in system PATH
+  - macOS: `brew install ffmpeg`
+  - Windows: Download from ffmpeg.org, add to PATH
+  - Linux: `apt install ffmpeg`
+- **libmagic** — required by python-magic
+  - macOS: `brew install libmagic`
+  - Windows: Install python-magic-bin instead (`pip install python-magic-bin`)
+  - Linux: `apt install libmagic1`
+
+### All Requirements in One File (`requirements.txt`)
+```
+opencv-python
+ffmpeg-python
+rawpy
+Pillow
+imagehash
+librosa
+python-magic
+tqdm
+numpy
+```
+
+---
+
+## 10. PROJECT FILE STRUCTURE
+
+```
+clipsorter/
+  sort.py               ← main entry point (CLI)
+  config.json           ← all configurable thresholds
+  requirements.txt      ← pip dependencies
+  README.md             ← usage instructions
+  /src/
+    scanner.py          ← recursive file walker and type detector
+    converter.py        ← format conversion logic (FFmpeg + rawpy + Pillow)
+    qc_video.py         ← video QC checks (blur, exposure, shake, duration)
+    qc_photo.py         ← photo QC checks (blur, exposure)
+    qc_audio.py         ← audio QC checks (silence, duration)
+    duplicate.py        ← duplicate detection (image hash, video keyframe, audio fingerprint)
+    classifier.py       ← combine QC results into clean/review/rejected decision
+    mover.py            ← create output folder structure and move files
+    reporter.py         ← write _report.txt
+    config_loader.py    ← load config.json with defaults fallback
+```
+
+---
+
+## 11. MODULE RESPONSIBILITIES
+
+### `sort.py` — Entry Point
+- Accept CLI argument: folder path
+- Validate the path exists
+- Load config via `config_loader.py`
+- Orchestrate the full pipeline in order:
+  1. scanner → 2. converter → 3. qc checks → 4. duplicate detector → 5. classifier → 6. mover → 7. reporter
+- Print progress to terminal using `tqdm`
+- Print summary on completion
+
+### `scanner.py`
+- Walk the target folder recursively using `os.walk`
+- For each file: detect true type using `python-magic`
+- Build a list of `FileRecord` objects:
+  ```python
+  {
+    "original_path": str,
+    "detected_type": "video" | "photo" | "audio" | "unknown",
+    "extension": str,
+    "filename": str
+  }
+  ```
+- Skip and log files with unknown/unsupported types
+
+### `converter.py`
+- Accept a `FileRecord`, convert to canonical format
+- Video → mp4 via FFmpeg (copy stream if already H.264, else re-encode with CRF 18)
+- Photo → jpg via rawpy (for RAW) or Pillow (for standard formats)
+- Audio → mp3 via FFmpeg
+- Output converted file to a temp working directory (`/tmp/clipsorter_work/`)
+- Update `FileRecord` with converted file path
+- If file is already in canonical format, skip conversion (just copy)
+
+### `qc_video.py`
+- Accept a converted video file path and config
+- Return a `QCResult` object:
+  ```python
+  {
+    "duration_check": "pass" | "rejected",
+    "blur_check": "pass" | "review" | "rejected",
+    "exposure_check": "pass" | "review" | "rejected",
+    "shake_check": "pass" | "review",
+    "reasons": [list of strings explaining any flags]
+  }
+  ```
+
+### `qc_photo.py`
+- Same structure as qc_video.py but only blur and exposure checks
+
+### `qc_audio.py`
+- Duration and silence checks
+- Return same `QCResult` structure
+
+### `duplicate.py`
+- After all files are processed, run cross-file comparison
+- Build hash index for all photos and video keyframes
+- Return a list of duplicate pairs:
+  ```python
+  [
+    {"file_a": path, "file_b": path, "match_type": "image_hash" | "video_keyframe" | "audio_fingerprint", "confidence": float}
+  ]
+  ```
+
+### `classifier.py`
+- Accept `QCResult` and duplicate info for each file
+- Apply priority rule: rejected > review > clean
+- Return final bucket: `"clean"` | `"review"` | `"rejected"`
+
+### `mover.py`
+- Create output folder structure at sibling path (`TargetFolder_sorted/`)
+- For each file: move to appropriate bucket and type subfolder
+- Never overwrite — if filename collision, append `_1`, `_2`, etc.
+
+### `reporter.py`
+- Write `_report.txt` to the output folder root
+- Include summary block and per-file detail log
+- Format as shown in Section 7
+
+### `config_loader.py`
+- Try to load `config.json` from same directory as `sort.py`
+- If missing or malformed, use hardcoded defaults
+- Log a warning if falling back to defaults
+
+---
+
+## 12. CLI USAGE
+
+### Basic Usage
+```bash
+python sort.py /path/to/TargetFolder
+```
+
+### With Custom Config
+```bash
+python sort.py /path/to/TargetFolder --config /path/to/custom_config.json
+```
+
+### With Verbose Output
+```bash
+python sort.py /path/to/TargetFolder --verbose
+```
+
+### Expected Terminal Output
+```
+ClipSorter v1.0
+Source: /Users/editor/2026.05.17_Chroniclers
+Output: /Users/editor/2026.05.17_Chroniclers_sorted
+
+Scanning files...        87 files found (79 supported, 8 skipped)
+Converting formats...    [====================] 79/79
+Running QC checks...     [====================] 79/79
+Detecting duplicates...  Done — 3 duplicate pairs found
+Classifying files...     Done
+Moving files...          Done
+Writing report...        Done
+
+========================================
+DONE
+  Clean:     51 files
+  Review:    19 files
+  Rejected:   9 files
+Report saved to: /Users/editor/2026.05.17_Chroniclers_sorted/_report.txt
+========================================
+```
+
+---
+
+## 13. ERROR HANDLING RULES
+
+- If FFmpeg fails on a file → log the error, mark file as **skipped**, continue
+- If OpenCV cannot open a video → log the error, mark as **review** (don't reject without analysis)
+- If a RAW file cannot be decoded by rawpy → attempt Pillow fallback, if that also fails → skip + log
+- If config.json is missing → use defaults, print warning, continue
+- If output folder already exists → do not overwrite, append timestamp suffix: `TargetFolder_sorted_20260517_143201`
+- Never crash silently — all exceptions must be caught, logged to report, and processing must continue on the next file
+
+---
+
+## 14. BUILD ORDER FOR AI AGENT
+
+Build in this exact sequence. Each step should be functional and testable before moving to the next.
+
+**Step 1:** `config_loader.py` — load config with defaults fallback. Test with and without config.json present.
+
+**Step 2:** `scanner.py` — recursive walk, true type detection, build FileRecord list. Test with a sample folder containing mixed file types.
+
+**Step 3:** `converter.py` — conversion pipeline. Test each format group (video, photo RAW, photo standard, audio). Confirm output lands in temp folder.
+
+**Step 4:** `qc_video.py` — duration, blur, exposure, shake. Test with known bad clips (dark video, blurry clip, short clip).
+
+**Step 5:** `qc_photo.py` — blur and exposure for images. Test with known bad photos.
+
+**Step 6:** `qc_audio.py` — duration and silence. Test with silent audio file.
+
+**Step 7:** `duplicate.py` — hash comparison. Test with two identical images and two near-identical videos.
+
+**Step 8:** `classifier.py` — combine results into final bucket. Test all combinations of pass/review/rejected inputs.
+
+**Step 9:** `mover.py` — create folder structure and move files. Test that original folder is untouched.
+
+**Step 10:** `reporter.py` — write report. Verify format matches spec in Section 7.
+
+**Step 11:** `sort.py` — wire all modules together with progress display. Full end-to-end test.
+
+---
+
+## 15. PHASE 2 — SIMPLE DESKTOP UI (AFTER CLI IS COMPLETE)
+
+Do not start Phase 2 until Phase 1 (CLI) is fully working.
+
+### Framework: Tkinter (built into Python, no install needed)
+
+### UI Has Three Screens Only
+
+**Screen 1 — Folder Selection**
+- A single button: "Select Folder"
+- Shows selected path in a text field
+- A "Start" button (disabled until a folder is selected)
+
+**Screen 2 — Progress**
+- Progress bar
+- Current file being processed (filename text)
+- Cannot go back during processing
+
+**Screen 3 — Results Summary**
+- Three numbers: Clean / Review / Rejected
+- Button: "Open Output Folder" (opens file explorer at output path)
+- Button: "View Report" (opens _report.txt in default text editor)
+- Button: "Sort Another Folder" (returns to Screen 1)
+
+### Desktop App Entry Point
+```bash
+python app.py
+```
+
+The `app.py` file imports and calls the same pipeline from `sort.py` — no logic duplication. The UI is only a wrapper around the existing CLI pipeline.
+
+---
+
+## 16. OUT OF SCOPE (DO NOT BUILD)
+
+- No cloud upload or download
+- No Google Drive integration
+- No video preview or playback inside the app
+- No manual override / drag-and-drop reassignment after sorting
+- No background music or audio mixing
+- No AI clip-to-VO matching (that is a separate future project)
+- No undo functionality
+- No database or persistent history between runs
