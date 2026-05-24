@@ -81,3 +81,27 @@ def test_load_config_does_not_mutate_defaults(tmp_path):
     config["blur_threshold"] = 999.0
 
     assert DEFAULT_CONFIG["blur_threshold"] == 80.0
+
+
+def test_load_config_mode_preset_changes_defaults(tmp_path):
+    missing = tmp_path / "config.json"
+
+    config = load_config(missing, mode="aggressive")
+
+    assert config["min_video_duration_sec"] == 4
+    assert config["blur_threshold"] == 70.0
+    assert config["duplicate_hash_threshold"] == 8
+
+
+def test_load_config_mode_preset_can_override_user(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"min_video_duration_sec": 8, "blur_threshold": 60.0}),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path, mode="conservative")
+
+    assert config["min_video_duration_sec"] == 6
+    assert config["blur_threshold"] == 90.0
+    assert config["shake_threshold"] == 10.0
