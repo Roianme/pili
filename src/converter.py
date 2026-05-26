@@ -192,48 +192,131 @@ def _convert_photo_pillow(source: Path, dest: Path) -> bool:
         return False
 
 
+def _extract_raw_preview_jpeg(source: Path, dest: Path) -> bool:
+    """Try to extract the embedded JPEG preview from a RAW file."""
+    try:
+        from PIL import Image, TiffImagePlugin
+    except ImportError:
+        logger.warning("Pillow not available to extract RAW preview from %s", source)
+        return False
+
+    try:
+        with Image.open(source) as img:
+            if hasattr(img, "tag_v2"):
+                tag_dict = img.tag_v2
+                jpeg_data = tag_dict.get(513)
+                jpeg_length = tag_dict.get(514)
+                if jpeg_data and jpeg_length:
+                    with open(source, "rb") as f:
+                        f.seek(jpeg_data)
+                        preview_data = f.read(jpeg_length)
+                    with Image.open(__import__("io").BytesIO(preview_data)) as preview:
+                        preview_rgb = preview.convert("RGB")
+                        preview_rgb.save(dest, "JPEG", quality=95)
+                    return dest.is_file()
+    except Exception as exc:
+        logger.debug("Could not extract RAW preview from %s: %s", source, exc)
+        return False
+
+    return False
+
+
 def _rawpy_postprocess_worker(source_path: str, dest_path: str) -> bool:
     """Worker function run in a separate process to postprocess RAW images."""
     import rawpy
     from PIL import Image
     with rawpy.imread(source_path) as raw:
-        rgb = raw.postprocess()
+        rgb = raw.postprocess(
+            use_camera_wb=True,
+            output_color=rawpy.ColorSpace.sRGB,
+            output_bps=8,
+        )
     Image.fromarray(rgb).save(dest_path, "JPEG", quality=95)
     return True
 
 
-def _convert_photo_raw(source: Path, dest: Path) -> bool:
+def _convert_photo_raw(source: Path, dest: Path, timeout_sec: int, strategy: str) -> bool:
+    strategy = strategy.lower()
+    if strategy == "preview":
+        return _extract_raw_preview_jpeg(source, dest)
+
     try:
         import rawpy  # noqa: F401
         from PIL import Image  # noqa: F401
     except ImportError as exc:
-        logger.warning("rawpy/Pillow not available for %s: %s; trying Pillow fallback", source, exc)
-        return _convert_photo_pillow(source, dest)
+        logger.warning("rawpy/Pillow not available for %s: %s; trying preview extraction", source, exc)
+        return _extract_raw_preview_jpeg(source, dest)
 
-    # Run rawpy.postprocess in a separate process with a timeout to avoid hangs.
+    tmp_dest = dest.with_suffix(dest.suffix + ".tmp")
     try:
-        with ProcessPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(_rawpy_postprocess_worker, str(source), str(dest))
+        if tmp_dest.exists():
+            tmp_dest.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+    executor = ProcessPoolExecutor(max_workers=1)
+    try:
+        future = executor.submit(_rawpy_postprocess_worker, str(source), str(tmp_dest))
+        try:
+            future.result(timeout=timeout_sec)
+        except _FuturesTimeout:
+            logger.warning(
+                "rawpy.postprocess timed out for %s after %s seconds; extracting preview instead",
+                source,
+                timeout_sec,
+            )
+            future.cancel()
             try:
-                future.result(timeout=30)
-            except _FuturesTimeout:
-                logger.warning("rawpy.postprocess timed out for %s; falling back to Pillow", source)
-                future.cancel()
-                return _convert_photo_pillow(source, dest)
-            except Exception as exc:
-                logger.warning("rawpy failed for %s: %s; trying Pillow fallback", source, exc)
-                return _convert_photo_pillow(source, dest)
+                if tmp_dest.exists():
+                    tmp_dest.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if strategy == "raw":
+                return False
+            return _extract_raw_preview_jpeg(source, dest)
+        except Exception as exc:
+            logger.warning("rawpy failed for %s: %s; trying preview extraction", source, exc)
+            try:
+                if tmp_dest.exists():
+                    tmp_dest.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if strategy == "raw":
+                return False
+            return _extract_raw_preview_jpeg(source, dest)
     except Exception as exc:
-        logger.warning("rawpy multiprocessing failed for %s: %s; trying Pillow fallback", source, exc)
-        return _convert_photo_pillow(source, dest)
+        logger.warning("rawpy multiprocessing failed for %s: %s; trying preview extraction", source, exc)
+        try:
+            if tmp_dest.exists():
+                tmp_dest.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if strategy == "raw":
+            return False
+        return _extract_raw_preview_jpeg(source, dest)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    try:
+        tmp_dest.replace(dest)
+    except OSError as exc:
+        logger.error("Failed to move RAW conversion result for %s: %s", source, exc)
+        try:
+            if tmp_dest.exists():
+                tmp_dest.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if strategy == "raw":
+            return False
+        return _extract_raw_preview_jpeg(source, dest)
 
     return dest.is_file()
 
 
-def _convert_photo(source: Path, dest: Path, extension: str) -> bool:
+def _convert_photo(source: Path, dest: Path, extension: str, timeout_sec: int, strategy: str) -> bool:
     ext = extension.lower()
     if ext in RAW_EXTENSIONS:
-        return _convert_photo_raw(source, dest)
+        return _convert_photo_raw(source, dest, timeout_sec, strategy)
     return _convert_photo_pillow(source, dest)
 
 
@@ -273,7 +356,13 @@ def convert_file(
     elif record["detected_type"] == "audio":
         success = _convert_audio(source, dest, config)
     elif record["detected_type"] == "photo":
-        success = _convert_photo(source, dest, record["extension"])
+        success = _convert_photo(
+            source,
+            dest,
+            record["extension"],
+            config["raw_conversion_timeout_sec"],
+            config["raw_conversion_strategy"],
+        )
     else:
         logger.error("Unsupported detected_type for conversion: %s", record["detected_type"])
 
@@ -282,6 +371,9 @@ def convert_file(
     else:
         result["skipped"] = True
         if dest.exists():
-            dest.unlink(missing_ok=True)
+            try:
+                dest.unlink(missing_ok=True)
+            except PermissionError as exc:
+                logger.warning("Could not remove failed output %s: %s", dest, exc)
 
     return result

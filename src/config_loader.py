@@ -33,6 +33,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "video_output_codec": "libx264",
     "video_output_crf": 18,
     "audio_output_bitrate": "192k",
+    "raw_conversion_timeout_sec": 30,
+    "raw_conversion_strategy": "auto",
 }
 
 MODE_PRESETS: dict[str, dict[str, Any]] = {

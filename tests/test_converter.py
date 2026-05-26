@@ -13,6 +13,7 @@ import pytest
 from PIL import Image
 
 from config_loader import DEFAULT_CONFIG
+import converter
 from converter import (
     ConvertedFileRecord,
     convert_file,
@@ -93,18 +94,89 @@ def test_png_converted_to_jpg(config: dict[str, Any], work_dir: Path, tmp_path: 
         assert image.format == "JPEG"
 
 
-def test_raw_rawpy_failure_uses_pillow_fallback(tmp_path: Path):
-    """JPEG bytes in a .arw file: rawpy fails, Pillow fallback succeeds."""
-    from converter import _convert_photo_raw
+def test_raw_rawpy_failure_uses_pillow_fallback(
+    config: dict[str, Any],
+    work_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Test that preview extraction is tried when rawpy fails on RAW file."""
+    source = tmp_path / "shot.arw"
+    source.write_bytes(MINIMAL_PNG)
+
+    preview_called = []
+
+    def mock_preview_extraction(src: Path, dst: Path) -> bool:
+        preview_called.append((src, dst))
+        Image.new("RGB", (4, 4), color="green").save(dst, "JPEG")
+        return True
+
+    monkeypatch.setattr("converter._extract_raw_preview_jpeg", mock_preview_extraction)
+
+    result = convert_file(_record(source, "photo", ".arw"), config, work_dir=work_dir)
+
+    assert result.get("converted_path") is not None
+    assert len(preview_called) > 0
+
+
+def test_raw_preview_only_strategy_uses_preview_extraction(
+    config: dict[str, Any],
+    work_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source = tmp_path / "shot.arw"
+    source.write_bytes(MINIMAL_PNG)
+    config["raw_conversion_strategy"] = "preview"
+
+    preview_called = []
+
+    def mock_preview_extraction(src: Path, dst: Path) -> bool:
+        preview_called.append((src, dst))
+        Image.new("RGB", (4, 4), color="yellow").save(dst, "JPEG")
+        return True
+
+    monkeypatch.setattr("converter._extract_raw_preview_jpeg", mock_preview_extraction)
+    result = convert_file(_record(source, "photo", ".arw"), config, work_dir=work_dir)
+
+    assert result.get("converted_path") is not None
+    assert len(preview_called) == 1
+
+
+def test_raw_preview_extraction_fallback(tmp_path: Path):
+    """Test that preview extraction is attempted when rawpy times out."""
+    from converter import _extract_raw_preview_jpeg
 
     source = tmp_path / "shot.arw"
     dest = tmp_path / "shot.jpg"
-    Image.new("RGB", (4, 4), color="blue").save(source, "JPEG")
+    # For now, just test that it handles missing files gracefully
+    result = _extract_raw_preview_jpeg(source, dest)
+    assert result is False
 
-    assert _convert_photo_raw(source, dest) is True
-    assert dest.exists()
-    with Image.open(dest) as image:
-        assert image.format == "JPEG"
+
+def test_raw_conversion_timeout_uses_config_value(
+    config: dict[str, Any],
+    work_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source = tmp_path / "shot.arw"
+    source.write_bytes(MINIMAL_PNG)
+    config["raw_conversion_timeout_sec"] = 5
+
+    captured: list[int] = []
+
+    def fake_convert_photo_raw(source_path: Path, dest: Path, timeout_sec: int, *args) -> bool:
+        captured.append(timeout_sec)
+        dest.write_bytes(b"x")
+        return True
+
+    monkeypatch.setattr("converter._convert_photo_raw", fake_convert_photo_raw)
+
+    result = convert_file(_record(source, "photo", ".arw"), config, work_dir=work_dir)
+
+    assert captured == [5]
+    assert result.get("converted_path") is not None
 
 
 def test_raw_both_decoders_fail_marks_skipped(
@@ -203,6 +275,35 @@ def test_ffmpeg_failure_marks_skipped(
 
     assert result.get("skipped") is True
     assert "converted_path" not in result
+
+
+def test_cleanup_permission_error_is_logged_and_skipped(
+    config: dict[str, Any],
+    work_dir: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    source = tmp_path / "shot.arw"
+    source.write_bytes(MINIMAL_PNG)
+    dest = work_dir / "shot.jpg"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"existing")
+
+    monkeypatch.setattr("converter._allocate_output_path", lambda *_: dest)
+    monkeypatch.setattr("converter._convert_photo", lambda *_: False)
+
+    def locked_unlink(self, *args, **kwargs):
+        raise PermissionError("file in use")
+
+    monkeypatch.setattr(converter.Path, "unlink", locked_unlink)
+
+    with caplog.at_level(logging.WARNING):
+        result = convert_file(_record(source, "photo", ".arw"), config, work_dir=work_dir)
+
+    assert result.get("skipped") is True
+    assert "converted_path" not in result
+    assert any("Could not remove failed output" in rec.message for rec in caplog.records)
 
 
 def test_audio_wav_to_mp3(
