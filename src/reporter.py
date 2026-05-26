@@ -63,6 +63,7 @@ def write_report(output_folder: Path | str, report_data: ReportData) -> Path:
     lines.append("Results:")
     results = report_data.get("results", {})
     lines.append(f"  Usable:{results.get('usable', 0):>21}")
+    lines.append(f"  Review:{results.get('review', 0):>21}")
     lines.append(f"  Defects:{results.get('defects', 0):>20}")
     lines.append("")
     lines.append(SEPARATOR)

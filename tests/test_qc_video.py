@@ -151,14 +151,14 @@ def test_exposure_review_mid_band(
     config: dict[str, Any],
     tmp_path: Path,
 ) -> None:
-    """Exactly 40% bad frames: above review 0.3, below reject 0.7."""
+    """60% bad frames: above review threshold of 50%."""
     path = tmp_path / "fake.mp4"
     path.touch()
     monkeypatch.setattr("qc_video._run_ffprobe_duration_seconds", lambda _p: 10.0)
 
     dark = np.zeros((80, 80, 3), dtype=np.uint8)
     ok = np.full((80, 80, 3), 128, dtype=np.uint8)
-    frames = [dark, dark, ok, ok, ok]
+    frames = [dark, dark, dark, ok, ok]
 
     monkeypatch.setattr("qc_video._read_sampled_frames", lambda *_a, **_k: (frames, None))
 
@@ -166,7 +166,7 @@ def test_exposure_review_mid_band(
     assert result["exposure_check"] == "review"
 
 
-def test_shake_high_flow_is_review_only(
+def test_shake_high_flow_is_review(
     monkeypatch: pytest.MonkeyPatch,
     config: dict[str, Any],
     tmp_path: Path,
@@ -182,6 +182,7 @@ def test_shake_high_flow_is_review_only(
     result = analyze_video(path, config)
     assert result["shake_check"] == "review"
     assert result["shake_check"] != "rejected"
+    assert any("shake" in reason.lower() for reason in result["reasons"])
 
 
 def test_ffprobe_failure_duration_review(

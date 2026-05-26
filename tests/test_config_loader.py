@@ -80,7 +80,7 @@ def test_load_config_does_not_mutate_defaults(tmp_path):
     config = load_config(config_path)
     config["blur_threshold"] = 999.0
 
-    assert DEFAULT_CONFIG["blur_threshold"] == 80.0
+    assert DEFAULT_CONFIG["blur_threshold"] == 35.0
 
 
 def test_load_config_mode_preset_changes_defaults(tmp_path):

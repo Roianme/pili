@@ -59,14 +59,14 @@ def test_blur_above_threshold_pass(tmp_path: Path, config: dict[str, Any]) -> No
     assert result["blur_check"] == "pass"
 
 
-def test_exposure_dark_is_review_not_rejected(tmp_path: Path, config: dict[str, Any]) -> None:
+def test_exposure_dark_is_review(tmp_path: Path, config: dict[str, Any]) -> None:
     path = tmp_path / "dark.jpg"
     dark = np.zeros((128, 128, 3), dtype=np.uint8)
     _save_array_as_image(path, dark)
 
     result = analyze_photo(path, config)
     assert result["exposure_check"] == "review"
-    assert result["exposure_check"] != "rejected"
+    assert any("exposure" in reason.lower() for reason in result["reasons"])
 
 
 def test_exposure_bright_is_review(tmp_path: Path, config: dict[str, Any]) -> None:
@@ -76,6 +76,7 @@ def test_exposure_bright_is_review(tmp_path: Path, config: dict[str, Any]) -> No
 
     result = analyze_photo(path, config)
     assert result["exposure_check"] == "review"
+    assert any("exposure" in reason.lower() for reason in result["reasons"])
 
 
 def test_exposure_normal_is_pass(tmp_path: Path, config: dict[str, Any]) -> None:

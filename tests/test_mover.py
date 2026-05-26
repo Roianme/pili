@@ -19,9 +19,16 @@ def test_setup_output_folder_creates_bucket_tree(tmp_path: Path) -> None:
 
     assert output.name == "TargetFolder_sorted"
     assert output.parent == tmp_path.resolve()
-    for bucket in ("usable", "usable/burst", "defects"):
-        for subfolder in TYPE_SUBFOLDERS.values():
-            assert (output / bucket / subfolder).is_dir()
+    assert (output / "usable" / "videos").is_dir()
+    assert (output / "usable" / "photos").is_dir()
+    assert (output / "usable" / "audio").is_dir()
+    assert (output / "review" / "videos").is_dir()
+    assert (output / "review" / "photos").is_dir()
+    assert (output / "review" / "audio").is_dir()
+    assert (output / "usable" / "burst").is_dir()
+    assert (output / "defects" / "videos").is_dir()
+    assert (output / "defects" / "photos").is_dir()
+    assert (output / "defects" / "audio").is_dir()
 
 
 def test_setup_output_folder_timestamp_when_exists(
@@ -66,11 +73,11 @@ def test_move_file_to_correct_bucket_and_type(tmp_path: Path) -> None:
 
 def test_move_file_collision_appends_suffix(tmp_path: Path) -> None:
     output = tmp_path / "TargetFolder_sorted"
-    (output / "usable" / "photos").mkdir(parents=True)
+    (output / "review" / "photos").mkdir(parents=True)
 
     work = tmp_path / "work"
     work.mkdir()
-    existing = output / "usable" / "photos" / "shot.jpg"
+    existing = output / "review" / "photos" / "shot.jpg"
     existing.write_bytes(b"existing")
 
     converted = work / "shot.jpg"
@@ -105,7 +112,7 @@ def test_move_file_all_detected_types(tmp_path: Path) -> None:
     output = tmp_path / "out_sorted"
     for bucket in BUCKETS:
         if bucket == "burst":
-            (output / bucket / TYPE_SUBFOLDERS["photo"]).mkdir(parents=True)
+            (output / bucket).mkdir(parents=True)
             continue
         for sub in TYPE_SUBFOLDERS.values():
             (output / bucket / sub).mkdir(parents=True)
@@ -115,7 +122,7 @@ def test_move_file_all_detected_types(tmp_path: Path) -> None:
 
     cases = [
         ("a.mp4", "clean", "video", "videos", "usable"),
-        ("b.jpg", "review", "photo", "photos", "usable"),
+        ("b.jpg", "review", "photo", "photos", "review"),
         ("c.mp3", "rejected", "audio", "audio", "defects"),
     ]
     for name, bucket, detected_type, sub, folder in cases:
@@ -136,7 +143,7 @@ def test_move_file_to_burst_photo_folder(tmp_path: Path) -> None:
     converted.write_bytes(b"image-bytes")
 
     final = move_file(converted, "burst", "photo", output)
-    assert final == output / "usable" / "burst" / "photos" / "burst.jpg"
+    assert final == output / "usable" / "burst" / "burst.jpg"
     assert final.is_file()
 
 
