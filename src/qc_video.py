@@ -18,6 +18,9 @@ QCLevel = Literal["pass", "review", "rejected"]
 class QCResult(TypedDict):
     duration_check: QCLevel
     blur_check: QCLevel
+    content_check: QCLevel
+    saturation_check: QCLevel
+    entropy_check: QCLevel
     exposure_check: QCLevel
     shake_check: QCLevel
     reasons: list[str]
@@ -262,6 +265,9 @@ def analyze_video(path: Path | str, config: dict[str, Any]) -> QCResult:
     return QCResult(
         duration_check=duration_check,
         blur_check=blur_check,
+        content_check="pass",
+        saturation_check="pass",
+        entropy_check="pass",
         exposure_check=exposure_check,
         shake_check=shake_check,
         reasons=reasons,

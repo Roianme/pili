@@ -36,6 +36,18 @@ def test_load_config_valid_file_merges_over_defaults(tmp_path, caplog):
     assert not caplog.records
 
 
+def test_load_config_loads_blur_max_threshold(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"blur_max_threshold": 1500.0}),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config["blur_max_threshold"] == 1500.0
+
+
 def test_load_config_malformed_json_uses_defaults(tmp_path, caplog):
     config_path = tmp_path / "config.json"
     config_path.write_text("{ not valid json", encoding="utf-8")
@@ -80,7 +92,7 @@ def test_load_config_does_not_mutate_defaults(tmp_path):
     config = load_config(config_path)
     config["blur_threshold"] = 999.0
 
-    assert DEFAULT_CONFIG["blur_threshold"] == 35.0
+    assert DEFAULT_CONFIG["blur_threshold"] == 60.0
 
 
 def test_load_config_mode_preset_changes_defaults(tmp_path):

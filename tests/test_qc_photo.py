@@ -32,6 +32,9 @@ def test_photo_qc_structure_and_not_applicable_fields(tmp_path: Path, config: di
     assert set(result.keys()) == {
         "duration_check",
         "blur_check",
+        "content_check",
+        "saturation_check",
+        "entropy_check",
         "exposure_check",
         "shake_check",
         "reasons",
@@ -106,6 +109,40 @@ def test_contrast_lens_cap_rejected(tmp_path: Path, config: dict[str, Any]) -> N
     result = analyze_photo(path, config)
     assert result["blur_check"] == "rejected"
     assert any("contrast" in reason.lower() for reason in result["reasons"])
+
+
+def test_subjectless_low_contrast_image_rejected(tmp_path: Path, config: dict[str, Any]) -> None:
+    path = tmp_path / "subjectless.jpg"
+    rng = np.random.default_rng(123)
+    base = np.full((160, 160), 120, dtype=np.int16)
+    noise = rng.integers(-4, 5, size=base.shape, dtype=np.int16)
+    gray = np.clip(base + noise, 0, 255).astype(np.uint8)
+    textured = np.dstack([gray] * 3)
+    _save_array_as_image(path, textured)
+
+    result = analyze_photo(path, config)
+    assert result["blur_check"] == "rejected"
+    assert any("contrast" in reason.lower() for reason in result["reasons"])
+
+
+def test_low_saturation_image_rejected(tmp_path: Path, config: dict[str, Any]) -> None:
+    path = tmp_path / "low_sat.jpg"
+    gray = np.full((160, 160, 3), 128, dtype=np.uint8)
+    _save_array_as_image(path, gray)
+
+    result = analyze_photo(path, config)
+    assert result["saturation_check"] == "rejected"
+    assert any("saturation" in reason.lower() for reason in result["reasons"])
+
+
+def test_low_entropy_image_rejected(tmp_path: Path, config: dict[str, Any]) -> None:
+    path = tmp_path / "low_entropy.jpg"
+    low_entropy = np.full((160, 160, 3), 128, dtype=np.uint8)
+    _save_array_as_image(path, low_entropy)
+
+    result = analyze_photo(path, config)
+    assert result["entropy_check"] == "rejected"
+    assert any("entropy" in reason.lower() for reason in result["reasons"])
 
 
 def test_contrast_high_variance_passes(tmp_path: Path, config: dict[str, Any]) -> None:

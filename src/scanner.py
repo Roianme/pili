@@ -99,6 +99,8 @@ _EXTRA_MIME_TYPES: dict[str, DetectedType] = {
     "application/x-matroska": "video",
     "application/ogg": "audio",
     "application/x-flac": "audio",
+    "application/quicktime": "video",
+    "video/quicktime": "video",
 }
 
 _INCONCLUSIVE_MIMES: frozenset[str] = frozenset(
@@ -152,7 +154,8 @@ def _detect_mime(path: Path) -> str | None:
 def classify_file(path: Path) -> DetectedType:
     """
     Classify a file using libmagic, with extension fallback only when
-    magic is inconclusive (e.g. RAW photos as application/octet-stream).
+    magic is inconclusive (e.g. RAW photos as application/octet-stream) or
+    when MIME is application/mp4 (which could be .m4a audio).
     """
     extension = _normalize_extension(path)
 
@@ -166,7 +169,8 @@ def classify_file(path: Path) -> DetectedType:
             return detected
 
         normalized = mime.split(";")[0].strip().lower()
-        if normalized in _INCONCLUSIVE_MIMES:
+        # For ambiguous MIME types, fall back to extension
+        if normalized in _INCONCLUSIVE_MIMES or normalized == "application/mp4":
             return _extension_type(extension)
 
         return "unknown"

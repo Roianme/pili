@@ -21,6 +21,9 @@ def _bucket_from_qc(qc_result: QCResult) -> Bucket:
     checks: list[QCLevel] = [
         qc_result["duration_check"],
         qc_result["blur_check"],
+        qc_result["content_check"],
+        qc_result["saturation_check"],
+        qc_result["entropy_check"],
         qc_result["exposure_check"],
         qc_result["shake_check"],
     ]
