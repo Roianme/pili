@@ -23,6 +23,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "subject_detection_classes": ["person", "face"],
     "subject_detection_fallback_classes": ["chair", "table", "laptop", "microphone"],
     "subject_detection_min_area_ratio": 0.01,
+    "subject_blur_threshold": 35.0,
+    "subject_blur_expand_px": 16,
     "contrast_threshold": 10.0,
     "exposure_low_threshold": 30,
     "exposure_high_threshold": 225,
@@ -46,8 +48,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "video_output_codec": "libx264",
     "video_output_crf": 18,
     "audio_output_bitrate": "192k",
-    "raw_conversion_timeout_sec": 30,
+    "raw_conversion_timeout_sec": 20,
     "raw_conversion_strategy": "auto",
+    "conversion_parallel_workers": 4,
+    "conversion_batch_size": 32,
+    "qc_parallel_workers": 2,
 }
 
 MODE_PRESETS: dict[str, dict[str, Any]] = {

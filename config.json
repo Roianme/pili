@@ -1,7 +1,7 @@
 {
   "min_video_duration_sec": 0,
   "min_audio_duration_sec": 0,
-  "blur_threshold": 18.0,
+  "blur_threshold": 17.0,
   "blur_reject_ratio": 0.6,
   "blur_review_ratio": 0.3,
   "blur_max_threshold": 1500.0,
@@ -11,6 +11,8 @@
   "subject_detection_classes": ["person", "face"],
   "subject_detection_fallback_classes": ["chair", "table", "laptop", "microphone"],
   "subject_detection_min_area_ratio": 0.01,
+  "subject_blur_threshold": 17.0,
+  "subject_blur_expand_px": 16,
   "shake_threshold": 30.0,
   "frame_sample_count": 10,
   "duplicate_hash_threshold": 10,
@@ -23,5 +25,9 @@
   "video_output_codec": "libx264",
   "video_output_crf": 18,
   "audio_output_bitrate": "192k",
-  "raw_conversion_strategy": "raw"
+  "raw_conversion_strategy": "auto",
+  "raw_conversion_timeout_sec": 20,
+  "conversion_parallel_workers": 4,
+  "conversion_batch_size": 32,
+  "qc_parallel_workers": 2
 }

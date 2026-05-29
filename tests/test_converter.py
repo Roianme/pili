@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 from PIL import Image
 
@@ -131,15 +132,16 @@ def test_raw_preview_only_strategy_uses_preview_extraction(
 
     preview_called = []
 
-    def mock_preview_extraction(src: Path, dst: Path) -> bool:
-        preview_called.append((src, dst))
-        Image.new("RGB", (4, 4), color="yellow").save(dst, "JPEG")
-        return True
+    def mock_preview_extraction(src: Path) -> np.ndarray | None:
+        preview_called.append(src)
+        img = Image.new("RGB", (4, 4), color="yellow")
+        return np.array(img)
 
-    monkeypatch.setattr("converter._extract_raw_preview_jpeg", mock_preview_extraction)
+    monkeypatch.setattr("converter._extract_raw_preview_array", mock_preview_extraction)
     result = convert_file(_record(source, "photo", ".arw"), config, work_dir=work_dir)
 
     assert result.get("converted_path") is not None
+    assert result.get("image_array") is not None
     assert len(preview_called) == 1
 
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -140,6 +142,72 @@ def _score_photo_for_burst(qc_result: dict[str, Any]) -> tuple[int, int, int]:
     return (blur_score, exposure_score, -reason_penalty)
 
 
+def _run_qc_check(record: converter.ConvertedFileRecord, config: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Run QC analysis on a single file and return (path, result)."""
+    converted_path = record.get("converted_path")
+    if not converted_path or record.get("skipped"):
+        return converted_path or "", {}
+    
+    image_array = record.get("image_array")
+    
+    try:
+        if record["detected_type"] == "video":
+            return converted_path, analyze_video(converted_path, config)
+        elif record["detected_type"] == "photo":
+            if image_array is not None:
+                return converted_path, analyze_photo(config=config, frame=image_array)
+            else:
+                return converted_path, analyze_photo(converted_path, config)
+        elif record["detected_type"] == "audio":
+            return converted_path, analyze_audio(converted_path, config)
+        else:
+            return converted_path, {
+                "duration_check": "pass",
+                "blur_check": "pass",
+                "exposure_check": "pass",
+                "shake_check": "pass",
+                "reasons": [],
+            }
+    except Exception:
+        logger.exception("QC failed for %s", converted_path)
+        return converted_path, {
+            "duration_check": "review",
+            "blur_check": "review",
+            "exposure_check": "review",
+            "shake_check": "review",
+            "reasons": ["QC analysis failed"],
+        }
+
+
+def _run_classifier_check(record: converter.ConvertedFileRecord, qc_results: dict[str, dict[str, Any]], duplicate_pairs: list[Any], burst_groups: list[Any], config: dict[str, Any]) -> tuple[str, classifier.ClassifierResult]:
+    """Classify a single file and return (path, result)."""
+    converted_path = record.get("converted_path")
+    if not converted_path or record.get("skipped"):
+        return converted_path or "", {"bucket": "skipped", "reasons": []}
+    
+    qc_result = qc_results.get(converted_path)
+    if qc_result is None:
+        qc_result = {
+            "duration_check": "pass",
+            "blur_check": "pass",
+            "exposure_check": "pass",
+            "shake_check": "pass",
+            "reasons": [],
+        }
+    
+    try:
+        return converted_path, classifier.classify_file(
+            qc_result,
+            duplicate_pairs,
+            converted_path,
+            config=config,
+            burst_groups=burst_groups,
+        )
+    except Exception:
+        logger.exception("Classification failed for %s", converted_path)
+        return converted_path, {"bucket": "review", "reasons": ["Classification failed"]}
+
+
 def _choose_best_burst_representatives(
     burst_groups: list[dict[str, Any]],
     qc_results: dict[str, dict[str, Any]],
@@ -252,103 +320,85 @@ def _run_pipeline(target_folder: Path, config_path: Path | None, verbose: bool) 
             pass
 
     converted_records: list[converter.ConvertedFileRecord] = []
-    print("Converting formats...", end=" ")
+    print("Converting formats...", end=" ", flush=True)
+    
+    max_workers = config.get("conversion_parallel_workers", 4)
+    if max_workers < 1:
+        max_workers = 1
+    
     if tqdm is not None:
-        conv_iter = tqdm(supported_records, desc="Converting formats", unit="file", dynamic_ncols=True, ncols=80, ascii=True)
-        for record in conv_iter:
-            try:
-                conv_iter.set_description(f"Converting {Path(record['original_path']).name}")
-                converted_records.append(converter.convert_file(record, config, work_dir=work_dir))
-            except Exception as exc:
-                logger.exception("Conversion failed for %s", record["original_path"])
-                unsupported_entries.append(
-                    {
-                        "bucket": "skipped",
-                        "final_path": _relative_path(source_folder, Path(record["original_path"])),
-                        "original_path": _relative_path(source_folder, Path(record["original_path"])),
-                        "reason": str(exc),
-                    }
-                )
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+            for record in supported_records:
+                future = executor.submit(converter.convert_file, record, config, work_dir=work_dir)
+                futures[future] = record
+            
+            with tqdm(total=len(supported_records), desc="Converting formats", unit="file", dynamic_ncols=True, ncols=100, ascii=True) as pbar:
+                for future in as_completed(futures):
+                    record = futures[future]
+                    try:
+                        converted_records.append(future.result())
+                        pbar.update(1)
+                    except Exception as exc:
+                        logger.exception("Conversion failed for %s", record["original_path"])
+                        unsupported_entries.append(
+                            {
+                                "bucket": "skipped",
+                                "final_path": _relative_path(source_folder, Path(record["original_path"])),
+                                "original_path": _relative_path(source_folder, Path(record["original_path"])),
+                                "reason": str(exc),
+                            }
+                        )
+                        pbar.update(1)
     else:
-        for record in supported_records:
-            try:
-                converted_records.append(converter.convert_file(record, config, work_dir=work_dir))
-            except Exception as exc:
-                logger.exception("Conversion failed for %s", record["original_path"])
-                unsupported_entries.append(
-                    {
-                        "bucket": "skipped",
-                        "final_path": _relative_path(source_folder, Path(record["original_path"])),
-                        "original_path": _relative_path(source_folder, Path(record["original_path"])),
-                        "reason": str(exc),
-                    }
-                )
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {}
+            for record in supported_records:
+                future = executor.submit(converter.convert_file, record, config, work_dir=work_dir)
+                futures[future] = record
+            
+            for future in as_completed(futures):
+                record = futures[future]
+                try:
+                    converted_records.append(future.result())
+                except Exception as exc:
+                    logger.exception("Conversion failed for %s", record["original_path"])
+                    unsupported_entries.append(
+                        {
+                            "bucket": "skipped",
+                            "final_path": _relative_path(source_folder, Path(record["original_path"])),
+                            "original_path": _relative_path(source_folder, Path(record["original_path"])),
+                            "reason": str(exc),
+                        }
+                    )
     print("Done")
 
+
     qc_results: dict[str, dict[str, Any]] = {}
-    print("Running QC checks...", end=" ")
+    print("Running QC checks...", end=" ", flush=True)
+    
+    qc_workers = config.get("qc_parallel_workers", 2)
+    if qc_workers < 1:
+        qc_workers = 1
+    
     if tqdm is not None:
-        qc_iter = tqdm(converted_records, desc="Running QC checks", unit="file", dynamic_ncols=True, ncols=80, ascii=True)
-        for record in qc_iter:
-            converted_path = record.get("converted_path")
-            if not converted_path or record.get("skipped"):
-                qc_iter.set_description("QC skipped")
-                continue
-            try:
-                qc_iter.set_description(f"QC {Path(converted_path).name}")
-                if record["detected_type"] == "video":
-                    qc_results[converted_path] = analyze_video(converted_path, config)
-                elif record["detected_type"] == "photo":
-                    qc_results[converted_path] = analyze_photo(converted_path, config)
-                elif record["detected_type"] == "audio":
-                    qc_results[converted_path] = analyze_audio(converted_path, config)
-                else:
-                    qc_results[converted_path] = {
-                        "duration_check": "pass",
-                        "blur_check": "pass",
-                        "exposure_check": "pass",
-                        "shake_check": "pass",
-                        "reasons": [],
-                    }
-            except Exception:
-                logger.exception("QC failed for %s", converted_path)
-                qc_results[converted_path] = {
-                    "duration_check": "review",
-                    "blur_check": "review",
-                    "exposure_check": "review",
-                    "shake_check": "review",
-                    "reasons": ["QC analysis failed"],
-                }
+        with ThreadPoolExecutor(max_workers=qc_workers) as executor:
+            futures = {executor.submit(_run_qc_check, record, config): record for record in converted_records}
+            with tqdm(total=len(converted_records), desc="Running QC checks", unit="file", dynamic_ncols=True, ncols=100, ascii=True) as pbar:
+                for future in as_completed(futures):
+                    path, result = future.result()
+                    if path:
+                        qc_results[path] = result
+                    pbar.update(1)
     else:
-        for record in converted_records:
-            converted_path = record.get("converted_path")
-            if not converted_path or record.get("skipped"):
-                continue
-            try:
-                if record["detected_type"] == "video":
-                    qc_results[converted_path] = analyze_video(converted_path, config)
-                elif record["detected_type"] == "photo":
-                    qc_results[converted_path] = analyze_photo(converted_path, config)
-                elif record["detected_type"] == "audio":
-                    qc_results[converted_path] = analyze_audio(converted_path, config)
-                else:
-                    qc_results[converted_path] = {
-                        "duration_check": "pass",
-                        "blur_check": "pass",
-                        "exposure_check": "pass",
-                        "shake_check": "pass",
-                        "reasons": [],
-                    }
-            except Exception:
-                logger.exception("QC failed for %s", converted_path)
-                qc_results[converted_path] = {
-                    "duration_check": "review",
-                    "blur_check": "review",
-                    "exposure_check": "review",
-                    "shake_check": "review",
-                    "reasons": ["QC analysis failed"],
-                }
+        with ThreadPoolExecutor(max_workers=qc_workers) as executor:
+            futures = {executor.submit(_run_qc_check, record, config): record for record in converted_records}
+            for future in as_completed(futures):
+                path, result = future.result()
+                if path:
+                    qc_results[path] = result
     print("Done")
+
 
     photo_paths = [r["converted_path"] for r in converted_records if r.get("converted_path") and r["detected_type"] == "photo"]
     video_paths = [r["converted_path"] for r in converted_records if r.get("converted_path") and r["detected_type"] == "video"]
@@ -399,60 +449,24 @@ def _run_pipeline(target_folder: Path, config_path: Path | None, verbose: bool) 
     selected_burst_representatives = _choose_best_burst_representatives(burst_groups, qc_results)
 
     classifications: dict[str, classifier.ClassifierResult] = {}
-    print("Classifying files...", end=" ")
+    print("Classifying files...", end=" ", flush=True)
+    
     if tqdm is not None:
-        cls_iter = tqdm(converted_records, desc="Classifying files", unit="file", dynamic_ncols=True, ncols=80, ascii=True)
-        for record in cls_iter:
-            converted_path = record.get("converted_path")
-            if not converted_path or record.get("skipped"):
-                cls_iter.set_description("Classifying skipped")
-                continue
-            qc_result = qc_results.get(converted_path)
-            if qc_result is None:
-                qc_result = {
-                    "duration_check": "pass",
-                    "blur_check": "pass",
-                    "exposure_check": "pass",
-                    "shake_check": "pass",
-                    "reasons": [],
-                }
-            try:
-                cls_iter.set_description(f"Classifying {Path(converted_path).name}")
-                classifications[converted_path] = classifier.classify_file(
-                    qc_result,
-                    duplicate_pairs,
-                    converted_path,
-                    config=config,
-                    burst_groups=burst_groups,
-                )
-            except Exception:
-                logger.exception("Classification failed for %s", converted_path)
-                classifications[converted_path] = {"bucket": "review", "reasons": ["Classification failed"]}
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(_run_classifier_check, record, qc_results, duplicate_pairs, burst_groups, config): record for record in converted_records}
+            with tqdm(total=len(converted_records), desc="Classifying files", unit="file", dynamic_ncols=True, ncols=100, ascii=True) as pbar:
+                for future in as_completed(futures):
+                    path, result = future.result()
+                    if path:
+                        classifications[path] = result
+                    pbar.update(1)
     else:
-        for record in converted_records:
-            converted_path = record.get("converted_path")
-            if not converted_path or record.get("skipped"):
-                continue
-            qc_result = qc_results.get(converted_path)
-            if qc_result is None:
-                qc_result = {
-                    "duration_check": "pass",
-                    "blur_check": "pass",
-                    "exposure_check": "pass",
-                    "shake_check": "pass",
-                    "reasons": [],
-                }
-            try:
-                classifications[converted_path] = classifier.classify_file(
-                    qc_result,
-                    duplicate_pairs,
-                    converted_path,
-                    config=config,
-                    burst_groups=burst_groups,
-                )
-            except Exception:
-                logger.exception("Classification failed for %s", converted_path)
-                classifications[converted_path] = {"bucket": "review", "reasons": ["Classification failed"]}
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(_run_classifier_check, record, qc_results, duplicate_pairs, burst_groups, config): record for record in converted_records}
+            for future in as_completed(futures):
+                path, result = future.result()
+                if path:
+                    classifications[path] = result
     print("Done")
 
     print("Moving files...", end=" ")

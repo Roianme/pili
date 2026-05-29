@@ -6,10 +6,13 @@ import logging
 import shutil
 import subprocess
 import tempfile
+import io
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
-from concurrent.futures import ProcessPoolExecutor, TimeoutError as _FuturesTimeout
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FuturesTimeout
+import threading
 
+import numpy as np
 from scanner import FileRecord
 
 logger = logging.getLogger(__name__)
@@ -39,6 +42,7 @@ WORK_DIR_NAME = "clipsorter_work"
 class ConvertedFileRecord(FileRecord, total=False):
     converted_path: NotRequired[str]
     skipped: NotRequired[bool]
+    image_array: NotRequired[np.ndarray]  # In-memory image for RAW previews
 
 
 def get_work_dir() -> Path:
@@ -192,13 +196,13 @@ def _convert_photo_pillow(source: Path, dest: Path) -> bool:
         return False
 
 
-def _extract_raw_preview_jpeg(source: Path, dest: Path) -> bool:
-    """Try to extract the embedded JPEG preview from a RAW file."""
+def _extract_raw_preview_array(source: Path) -> np.ndarray | None:
+    """Extract embedded JPEG preview from RAW file as numpy array (in-memory)."""
     try:
-        from PIL import Image, TiffImagePlugin
+        from PIL import Image
     except ImportError:
         logger.warning("Pillow not available to extract RAW preview from %s", source)
-        return False
+        return None
 
     try:
         with Image.open(source) as img:
@@ -210,15 +214,28 @@ def _extract_raw_preview_jpeg(source: Path, dest: Path) -> bool:
                     with open(source, "rb") as f:
                         f.seek(jpeg_data)
                         preview_data = f.read(jpeg_length)
-                    with Image.open(__import__("io").BytesIO(preview_data)) as preview:
+                    with Image.open(io.BytesIO(preview_data)) as preview:
                         preview_rgb = preview.convert("RGB")
-                        preview_rgb.save(dest, "JPEG", quality=95)
-                    return dest.is_file()
+                        return np.array(preview_rgb)
     except Exception as exc:
         logger.debug("Could not extract RAW preview from %s: %s", source, exc)
-        return False
+        return None
 
-    return False
+    return None
+
+
+def _extract_raw_preview_jpeg(source: Path, dest: Path) -> bool:
+    """Try to extract the embedded JPEG preview from a RAW file to disk."""
+    arr = _extract_raw_preview_array(source)
+    if arr is None:
+        return False
+    try:
+        from PIL import Image
+        Image.fromarray(arr).save(dest, "JPEG", quality=95)
+        return dest.is_file()
+    except Exception as exc:
+        logger.error("Failed to save RAW preview for %s: %s", source, exc)
+        return False
 
 
 def _rawpy_postprocess_worker(source_path: str, dest_path: str) -> bool:
@@ -254,7 +271,7 @@ def _convert_photo_raw(source: Path, dest: Path, timeout_sec: int, strategy: str
     except OSError:
         pass
 
-    executor = ProcessPoolExecutor(max_workers=1)
+    executor = ThreadPoolExecutor(max_workers=1)
     try:
         future = executor.submit(_rawpy_postprocess_worker, str(source), str(tmp_dest))
         try:
@@ -313,11 +330,31 @@ def _convert_photo_raw(source: Path, dest: Path, timeout_sec: int, strategy: str
     return dest.is_file()
 
 
-def _convert_photo(source: Path, dest: Path, extension: str, timeout_sec: int, strategy: str) -> bool:
+def _convert_photo(source: Path, dest: Path, extension: str, timeout_sec: int, strategy: str) -> tuple[bool, np.ndarray | None]:
+    """
+    Convert photo file. For RAW with preview strategy, optionally return in-memory array.
+    
+    Returns: (success, image_array_or_none)
+    
+    For RAW with preview/auto strategy:
+      - If successful, returns (True, numpy_array)
+      - On auto with fallback, returns (True, array_from_preview)
+    For all other photos:
+      - Returns (success_bool, None)
+    """
     ext = extension.lower()
     if ext in RAW_EXTENSIONS:
-        return _convert_photo_raw(source, dest, timeout_sec, strategy)
-    return _convert_photo_pillow(source, dest)
+        strategy = strategy.lower()
+        if strategy in ("preview", "auto"):
+            arr = _extract_raw_preview_array(source)
+            if arr is not None:
+                return True, arr
+            if strategy == "preview":
+                return False, None
+        success = _convert_photo_raw(source, dest, timeout_sec, strategy)
+        return success, None
+    success = _convert_photo_pillow(source, dest)
+    return success, None
 
 
 def convert_file(
@@ -328,6 +365,7 @@ def convert_file(
     """
     Convert one FileRecord to a canonical file in the work directory.
 
+    For RAW files with preview strategy, returns image_array in-memory instead of temp file.
     Sets converted_path on success, or skipped=True when conversion fails.
     """
     result: ConvertedFileRecord = dict(record)
@@ -345,6 +383,8 @@ def convert_file(
     dest = _allocate_output_path(target_dir, source, suffix)
 
     success = False
+    image_array = None
+    
     if _is_canonical(record):
         try:
             shutil.copy2(source, dest)
@@ -356,7 +396,7 @@ def convert_file(
     elif record["detected_type"] == "audio":
         success = _convert_audio(source, dest, config)
     elif record["detected_type"] == "photo":
-        success = _convert_photo(
+        success, image_array = _convert_photo(
             source,
             dest,
             record["extension"],
@@ -367,7 +407,17 @@ def convert_file(
         logger.error("Unsupported detected_type for conversion: %s", record["detected_type"])
 
     if success:
-        result["converted_path"] = str(dest.resolve())
+        if image_array is not None:
+            try:
+                from PIL import Image
+                Image.fromarray(image_array).save(dest, "JPEG", quality=95)
+                result["converted_path"] = str(dest.resolve())
+                result["image_array"] = image_array
+            except Exception as exc:
+                logger.error("Failed to save in-memory image for %s: %s", source, exc)
+                result["skipped"] = True
+        else:
+            result["converted_path"] = str(dest.resolve())
     else:
         result["skipped"] = True
         if dest.exists():
