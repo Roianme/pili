@@ -396,13 +396,18 @@ def convert_file(
     elif record["detected_type"] == "audio":
         success = _convert_audio(source, dest, config)
     elif record["detected_type"] == "photo":
-        success, image_array = _convert_photo(
+        convert_result = _convert_photo(
             source,
             dest,
             record["extension"],
             config["raw_conversion_timeout_sec"],
             config["raw_conversion_strategy"],
         )
+        if isinstance(convert_result, tuple):
+            success, image_array = convert_result
+        else:
+            success = bool(convert_result)
+            image_array = None
     else:
         logger.error("Unsupported detected_type for conversion: %s", record["detected_type"])
 
